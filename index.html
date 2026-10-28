@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Eircode Solar Forecast</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:16px;max-width:900px;margin:auto}
+h1{font-size:1.4rem}.card{background:#1e293b;border-radius:12px;padding:14px;margin:12px 0}
+input,select,button{padding:10px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;font-size:1rem;margin:3px 0}
+button{background:#f59e0b;color:#000;border:0;font-weight:600;cursor:pointer}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:end}.row label{font-size:.8rem;display:flex;flex-direction:column}
+table{width:100%;border-collapse:collapse}td,th{padding:6px;text-align:right;border-bottom:1px solid #334155}td:first-child,th:first-child{text-align:left}
+canvas{width:100%;height:220px}.big{font-size:1.8rem;font-weight:700;color:#fbbf24}.small{color:#94a3b8;font-size:.85rem}
+</style></head><body>
+<h1>☀️ Eircode Solar Forecast</h1>
+<div class="card">
+<div class="row">
+<label>Eircode or town<input id="q" placeholder="e.g. A82 X123 or Mount Nugent" value="Mount Nugent, Cavan"></label>
+<label>Panel kWp<input id="kwp" type="number" step="0.1" value="5" style="width:80px"></label>
+<label>Tilt °<input id="tilt" type="number" value="35" style="width:70px"></label>
+<label>Facing<select id="az"><option value="0">South</option><option value="-45">SE</option><option value="45">SW</option><option value="-90">East</option><option value="90">West</option></select></label>
+<button onclick="go()">Forecast</button><button onclick="geo()">📍 Use my location</button>
+</div>
+<div class="small" id="loc"></div>
+<div class="small">Eircodes have no free public lookup, so exact-address matching is best-effort. If it fails, type the town or use your location.</div>
+</div>
+<div id="out"></div>
+<script>
+let lat=53.8,lon=-7.07,name="Mount Nugent (default)";
+const $=id=>document.getElementById(id);
+async function resolve(q){
+  const tries=[q+", Ireland",q.replace(/\s+/g,"")+", Ireland",q.slice(0,3)+" Ireland"];
+  for(const t of tries){
+    try{const r=await fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ie&q="+encodeURIComponent(t));
+    const j=await r.json();if(j.length){lat=+j[0].lat;lon=+j[0].lon;name=j[0].display_name;return true}}catch(e){}
+  }return false}
+function geo(){navigator.geolocation.getCurrentPosition(p=>{lat=p.coords.latitude;lon=p.coords.longitude;name="Your location";run()},()=>alert("Location denied"))}
+async function go(){$("out").innerHTML="Looking up location…";
+  if(!(await resolve($("q").value))){$("out").innerHTML="Couldn't find that. Try a town name or use your location.";return}
+  run()}
+function chart(c,vals,labels,color){
+  const x=c.getContext("2d");c.width=c.clientWidth*2;c.height=440;x.scale(2,2);const W=c.clientWidth,H=220,m=30;
+  const mx=Math.max(...vals,1);x.clearRect(0,0,W,H);x.fillStyle="#94a3b8";x.font="11px sans-serif";
+  const bw=(W-m)/vals.length;
+  vals.forEach((v,i)=>{const h=(H-m-10)*v/mx;x.fillStyle=color;x.fillRect(m+i*bw,H-m-h,Math.max(bw-1,1),h);
+    if(labels[i]){x.fillStyle="#94a3b8";x.fillText(labels[i],m+i*bw,H-12)}});
+  x.fillStyle="#94a3b8";x.fillText(Math.round(mx),0,14)}
+async function run(){
+  $("loc").textContent="📍 "+name+" ("+lat.toFixed(3)+", "+lon.toFixed(3)+")";
+  $("out").innerHTML="Loading forecast…";
+  const kwp=+$("kwp").value,tilt=+$("tilt").value,az=+$("az").value;
+  const u=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=global_tilted_irradiance,cloud_cover,temperature_2m&daily=sunrise,sunset,sunshine_duration&tilt=${tilt}&azimuth=${az}&timezone=Europe%2FDublin&forecast_days=7`;
+  const d=await (await fetch(u)).json();
+  const H=d.hourly,days={};
+  H.time.forEach((t,i)=>{const day=t.slice(0,10);const g=H.global_tilted_irradiance[i]||0;
+    (days[day]=days[day]||{kwh:0,cloud:[]}).kwh+=kwp*g/1000*0.8;days[day].cloud.push(H.cloud_cover[i])});
+  const keys=Object.keys(days);
+  let rows=keys.map((k,i)=>{const c=days[k].cloud,avg=c.reduce((a,b)=>a+b,0)/c.length;
+    return `<tr><td>${new Date(k).toLocaleDateString("en-IE",{weekday:"short",day:"numeric",month:"short"})}</td><td>${days[k].kwh.toFixed(1)} kWh</td><td>${Math.round(avg)}%</td><td>${(d.daily.sunshine_duration[i]/3600).toFixed(1)} h</td><td>${d.daily.sunrise[i].slice(11)}–${d.daily.sunset[i].slice(11)}</td></tr>`}).join("");
+  $("out").innerHTML=`<div class="card"><div class="small">Today's estimated generation</div><div class="big">${days[keys[0]].kwh.toFixed(1)} kWh</div><div class="small">Tomorrow: ${days[keys[1]].kwh.toFixed(1)} kWh · 7-day total: ${keys.reduce((a,k)=>a+days[k].kwh,0).toFixed(0)} kWh</div></div>
+  <div class="card"><b>Hourly output (kW), next 48h</b><canvas id="c1"></canvas></div>
+  <div class="card"><b>7-day outlook</b><table><tr><th>Day</th><th>Yield</th><th>Cloud</th><th>Sun</th><th>Daylight</th></tr>${rows}</table></div>
+  <div class="card" id="aur"><b>Space weather (aurora chance)</b><div class="small">Loading…</div></div>`;
+  const hv=[],hl=[];for(let i=0;i<48;i++){hv.push(kwp*(H.global_tilted_irradiance[i]||0)/1000*0.8);hl.push(i%6==0?H.time[i].slice(11,13)+"h":"")}
+  chart($("c1"),hv,hl,"#fbbf24");
+  try{const k=await (await fetch("https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json")).json();
+    const f=k.slice(1).filter(r=>new Date(r[0]+"Z")>new Date()).slice(0,8);const peak=Math.max(...f.map(r=>+r[1]));
+    $("aur").innerHTML=`<b>Space weather (aurora chance)</b><p>Peak forecast Kp next ~24h: <b>${peak}</b>. ${peak>=6?"Aurora possible even from Cavan if skies are clear!":peak>=5?"Worth a look north from a dark site.":"Unlikely at Irish latitudes."}</p><div class="small">Source: NOAA SWPC. Kp 6+ is usually needed for Ireland.</div>`}catch(e){$("aur").innerHTML="Space weather unavailable."}
+}
+run();
+</script></body></html>
